@@ -1,0 +1,205 @@
+rm(list = ls())
+library(maftools)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+
+setwd("path/POLE")
+sampleQC_plasma_cfDNA_new<-read.csv("path/clinical.csv")
+sampleQC_plasma_cfDNA_new<-sampleQC_plasma_cfDNA_new[,-1]
+colnames(sampleQC_plasma_cfDNA_new)[1]<-"Tumor_Sample_Barcode"
+Time<-strsplit(sampleQC_plasma_cfDNA_new$Time,"-")
+Time<-lapply(Time, function(x){
+  if (length(x)==2){x=x[[2]]}
+  return(x)
+})%>%unlist()
+sampleQC_plasma_cfDNA_new$Time<-Time
+sampleQC_plasma_cfDNA_new<-sampleQC_plasma_cfDNA_new[!is.na(sampleQC_plasma_cfDNA_new$Time),]
+maf <- read.maf("POLE_project_revised.maf",clinicalData = sampleQC_plasma_cfDNA_new)
+maf_pole <-subsetMaf(maf,clinQuery = "Gene=='POLE'")
+maf_pold <-subsetMaf(maf,clinQuery = "Gene=='POLD1'")
+##Total###
+maf__baseline <- subsetMaf(maf,clinQuery ="Time%in%c('tissue_baseline','Baseline')" )
+
+##pold1 & pole ####
+setwd("path/pole&pold1")
+maf_tissue <-subsetMaf(maf,clinQuery = "Type=='TISSUE_Baseline'")
+maf_tissue@clinical.data$Best_Evaluation<-ifelse(maf_tissue@clinical.data$Best_Evaluation%in%c("PR","CR"),"R","NR")
+
+
+
+###ctDNA####
+maf_plasma <-subsetMaf(maf,clinQuery = "Type=='plasma'")
+maf_plasma@clinical.data$Best_Evaluation<-ifelse(maf_plasma@clinical.data$Best_Evaluation%in%c("PR","CR"),"R","NR")
+maf_plasma@clinical.data$Time<-ifelse(maf_plasma@clinical.data$Time=="Baseline",0,as.numeric(maf_plasma@clinical.data$Time))
+
+maf_plasma_response<-subsetMaf(maf_plasma,clinQuery = "Best_Evaluation=='R'")
+##tmb change of responder ###
+tmb_response<- maf_plasma_response@clinical.data
+tmb_response$Time<-as.numeric(tmb_response$Time)
+tmb_response$Evaluation[is.na(tmb_response$Evaluation)]<-"NA"
+tmb_response$Evaluation<-factor(tmb_response$Evaluation,level=c("NA","SD","PR","CR"))
+tmb_response$TMB<-log2(as.numeric(tmb_response$TMB)+0.1)
+# tmb_response$TMB<-as.numeric(tmb_response$TMB)
+tmb_response$Time<-as.numeric(tmb_response$Time)
+
+tmb_response$Load<-as.numeric(tmb_response$Load)
+
+patient<-unique(maf_plasma@clinical.data$ID)
+maf_plasma_patient <- lapply(patient, function(x){
+  x=paste0("ID=='",x,"'")
+  t<-subsetMaf(maf_plasma,clinQuery = x,dropLevels = F)
+  return(t)
+})
+names(maf_plasma_patient)<-patient
+maf_plasma_patient$SYSUCC14@clinical.data<-maf_plasma@clinical.data[51,]
+maf_plasma_patient$SYSUCC04@clinical.data<-maf_plasma@clinical.data[63,]
+maf_plasma_patient_matrix <-lapply(maf_plasma_patient, function(x){
+  data <-x@data
+  clinical <-x@clinical.data
+  clinical$Time<-ifelse(clinical$Time=="Baseline",0,as.numeric(clinical$Time))
+  clinical<-clinical[order(clinical$Time,decreasing = F),]
+  data$change<-paste0(data$gene,",",data$nt,",",data$aa)
+  change <-unique(data$change)
+  time <-unique(clinical$Time)
+  data$Time <-clinical$Time[match(data$Tumor_Sample_Barcode,clinical$Tumor_Sample_Barcode)]
+  matrix<-matrix(data = NA,nrow = length(change),ncol =length(time) )
+  rownames(matrix)<-change
+  colnames(matrix)<-time
+  for (i in 1:nrow(data)){
+    sam<-data[i,c("change","Time","VAF")]
+    r <- match(sam[1,1],rownames(matrix))
+    c <- match(sam[1,2],colnames(matrix))
+    matrix[r,c]<-as.numeric(sam[1,3])
+  }
+  matrix[is.na(matrix)]<-0
+  matrix <-as.data.frame(matrix)
+  status <-strsplit(rownames(matrix),",")%>%do.call(rbind,.)%>%as.data.frame()
+  colnames(status)<-c("gene","base","aa")
+  matrix <-cbind(status,matrix)
+  return(matrix)
+  
+})
+maf_plasma_patient_matrix_germline <-maf_plasma_patient_matrix
+maf_plasma_patient_matrix$SYSUCC07<-maf_plasma_patient_matrix$SYSUCC07[-which(rownames(maf_plasma_patient_matrix$SYSUCC07)=="POLD1,c.2045G>A,p.R682Q"),]
+maf_plasma_patient_maxVAF<-lapply(maf_plasma_patient_matrix, function(x){
+  x <-apply(x, 2, max)%>%.[-c(1:3)]
+  return(x)
+})
+maf_plasma_patient_maxVAF<-lapply(1:length(patient), function(x){
+  print(x)
+  data<-maf_plasma_patient_maxVAF[[x]]
+  data<-as.data.frame(data)
+  data<-cbind(cycle=rownames(data),data)
+  data$ID<-names(maf_plasma_patient_maxVAF)[[x]]
+  return(data)
+})
+maf_plasma_patient_maxVAF<-do.call(rbind,maf_plasma_patient_maxVAF)
+maf_plasma_patient_maxVAF$cycle<-as.numeric(maf_plasma_patient_maxVAF$cycle)
+
+
+###POLE/POLD1 VAF####
+ctdna.pol <- lapply(1:length(maf_plasma_patient_matrix_germline), function(i){
+  x<-maf_plasma_patient_matrix_germline[[i]]
+  pol.s <-x$gene%in%c("POLE","POLD1")%>%na.omit()
+  if( is.null(pol.s)){x <-NA}else{x <- x[pol.s,]}
+  if (nrow(x)>0){x<-apply(x, 2, max)%>%.[-c(1:3)]
+  x<-cbind(names(x),x)%>%as.data.frame()
+  colnames(x)<-c("cycle","POL_VAF")
+  x$ID<-names(maf_plasma_patient_matrix_germline)[i]  }else(x<-NA)
+  return(x)
+  
+})
+ctdna.pol<-do.call(rbind,ctdna.pol)%>%as.data.frame()
+
+###tmb pol_vaf maxvaf tumor_load merge####
+ctdna.pol$type <-"POL_VAF"
+colnames(ctdna.pol)<-c("Time","Value","ID","type")
+ctdna.pol2<-ctdna.pol
+maf_plasma_patient_maxVAF2<-maf_plasma_patient_maxVAF
+maf_plasma_patient_maxVAF2$type <-"VAF"
+
+colnames(maf_plasma_patient_maxVAF2)<-c("Time","Value","ID","type")
+tmb <-maf_plasma@clinical.data%>%.[,c(7,9,6,5,8)]
+tmb$type <-"TMB"
+colnames(tmb)[c(1,2,3,6)]<-c("Time","Value","ID","type")
+##tumor load ##
+load("path/tumor.load.rdata")
+tumor.load<-tumor.load.time[,c(2,3,1)]
+tumor.load$type <-"Tumor_load"
+colnames(tumor.load)<-c("Time","Value","ID","type")
+tumor.load$ID<-maf@clinical.data$ID[match(tumor.load$ID,maf@clinical.data$names)]
+tumor.eva<-tumor.load.time[,c(2,5,1)]
+tumor.eva$type <-"Evaluation"
+colnames(tumor.eva)<-c("Time","Value","ID","type")
+
+##tumor load chang from baseline####
+tumor.change.cli <-maf@clinical.data
+
+tumor.load.time<-cbind(tumor.change.cli[match(tumor.load.time$sample,tumor.change.cli$names),c(6,5,2)],tumor.load.time) 
+tumor.load.time.split <- split(tumor.load.time,tumor.load.time$ID)
+tumor.load.time.split <-lapply(tumor.load.time.split, function(x){
+  x$Time <- as.numeric(x$Time)
+  # x <- x[order(x$Time,decreasing = F),]
+  change<- ((x$Load-x$Load[1])/x$Load[1])*100
+  x$change <- change
+  return(x)
+})
+tumor.load.time.split <-do.call(rbind,tumor.load.time.split)%>%as.data.frame()
+tumor.load.time.split$sample<-paste0(tumor.load.time.split$Time,tumor.load.time.split$ID)
+tumor.load.sample <-tumor.load
+tumor.load.sample$sample <- paste0(tumor.load.sample$Time,tumor.load.sample$ID)
+tumor.load$Value<-tumor.load.time.split$change[match(tumor.load.sample$sample,tumor.load.time.split$sample)]
+tumor.load$Value <- tumor.load$Value/10
+
+
+## mutation signature ####
+mut.sig <-read.csv("path/maf.ct.sign.contr.mat.csv",row.names = 1)
+mut.sig<-t(mut.sig)%>%as.data.frame()
+mut.sig$Tumor_Sample_Barcode<-gsub("\\.","\\-",rownames(mut.sig))
+
+mut.sig<-merge(mut.sig,maf_plasma@clinical.data,by="Tumor_Sample_Barcode")
+mut.sig <-mut.sig[,c(10,2,9)]
+mut.sig$type <-"Signature1"
+colnames(mut.sig)<-c("Time","Value","ID","type")
+
+ctdna.inf <- do.call(rbind,list(maf_plasma_patient_maxVAF2,ctdna.pol2,tmb[,c(1,2,3,6)],tumor.load,mut.sig))
+ctdna.inf$Time<-lapply(ctdna.inf$Time,as.numeric)%>%unlist()
+ctdna.inf<-ctdna.inf%>%filter(!is.na(ID))
+ctdna.inf$Value<-as.numeric(ctdna.inf$Value)
+ctdna.inf.resp<- ctdna.inf%>%filter(ID%in%c("SYSUCC10","SYSUCC09","SYSUCC07"))
+ctdna.vaf.resp<-ctdna.inf.resp%>%filter(type%in%c("Tumor_load","POL_VAF","VAF"))
+ctdna.inf.nonres<- ctdna.inf%>%filter(!ID%in%c("SYSUCC10","SYSUCC09","SYSUCC07"))
+
+ctdna.vaf.nonres<-ctdna.inf.nonres%>%filter(type%in%c("Tumor_load","POL_VAF","VAF"))
+
+
+ctdna.inf.nonres<- ctdna.inf%>%filter(ID%in%c("SYSUCC06"))
+ctdna.vaf.nonres<-ctdna.inf.nonres%>%filter(type%in%c("Tumor_load","POL_VAF","VAF"))
+
+###TMB
+ctdna.tmb.resp<-ctdna.inf.resp%>%filter(type%in%c("Tumor_load","POL_VAF","VAF","TMB"))
+ctdna.tmb.resp.tmb <- ctdna.tmb.resp%>%filter(type%in%"TMB")
+ctdna.tmb.resp.nontmb <- ctdna.tmb.resp%>%filter(!type%in%"TMB")
+ctdna.tmb.resp.tmb$Value<-log2(ctdna.tmb.resp.tmb$Value+0.01)
+ctdna.tmb.resp <- rbind(ctdna.tmb.resp.nontmb,ctdna.tmb.resp.tmb)
+ctdna.tmb.nonres<-ctdna.inf.nonres%>%filter(type%in%c("Tumor_load","POL_VAF","VAF","TMB"))
+ctdna.tmb.nonres.tmb <- ctdna.tmb.nonres%>%filter(type%in%"TMB")
+ctdna.tmb.nonres.nontmb <- ctdna.tmb.nonres%>%filter(!type%in%"TMB")
+ctdna.tmb.nonres.tmb$Value<-log2(ctdna.tmb.nonres.tmb$Value+0.01)
+ctdna.tmb.nonres <- rbind(ctdna.tmb.nonres.nontmb,ctdna.tmb.nonres.tmb)
+
+
+##merge
+ctdna.tmb.merge <- rbind(ctdna.tmb.resp,ctdna.tmb.nonres)
+ggplot(data = ctdna.tmb.merge)+
+  geom_line(aes(x=Time,y=Value,group=type,color=type))+
+  geom_point(aes(x=Time,y=Value,group=type,color=type))+
+  facet_wrap(.~ID,nrow = 3,scales = "free")+
+  theme_bw()+
+  scale_y_continuous(sec.axis = sec_axis(~.*10, name = "Tumor Burden Change From Baseline(%)"))+
+  ggsci::scale_color_nejm(labels=c("POL VAF","log2(TMB+0.01)","Tumor Burden Change From Baseline","maxVAF"),name="")+
+  labs(x="Treatment Cycle")+
+  scale_x_continuous(breaks=seq(0, 32, 2)) 
+ggsave("all_pol_max_vaf_tumorload_TMB.pdf",height = 8,width =14)
+

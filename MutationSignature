@@ -1,0 +1,83 @@
+rm(list = ls())
+library(maftools)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+
+setwd("path")
+sampleQC_plasma_cfDNA_new<-read.csv("path/clinical.csv")
+sampleQC_plasma_cfDNA_new<-sampleQC_plasma_cfDNA_new[,-1]
+colnames(sampleQC_plasma_cfDNA_new)[1]<-"Tumor_Sample_Barcode"
+Time<-strsplit(sampleQC_plasma_cfDNA_new$Time,"-")
+Time<-lapply(Time, function(x){
+  if (length(x)==2){x=x[[2]]}
+  return(x)
+})%>%unlist()
+sampleQC_plasma_cfDNA_new$Time<-Time
+sampleQC_plasma_cfDNA_new<-sampleQC_plasma_cfDNA_new[!is.na(sampleQC_plasma_cfDNA_new$Time),]
+maf <- read.maf("POLE_project_revised.maf",clinicalData = sampleQC_plasma_cfDNA_new)
+
+##maf_tissue_baseline##
+# maf.tb<-subsetMaf(maf=maf,clinQuery ="Type%in%c('TISSUE_Baseline')")
+maf.tb<-subsetMaf(maf=maf,clinQuery ="!Type%in%c('plasma')")
+filter.sample <- maf.tb@variants.per.sample%>%filter(Variants>10)
+maf.tb.filter <- subsetMaf(maf = maf.tb,tsb=filter.sample$Tumor_Sample_Barcode)
+library(BSgenome.Hsapiens.UCSC.hg19)
+maf.tb.tnm = trinucleotideMatrix(maf = maf.tb.filter, prefix = '', add = TRUE, ref_genome = "BSgenome.Hsapiens.UCSC.hg19")
+###maftool####
+library('NMF')
+setwd("path/figure/Mutation_Sig")
+maf.tb.tnm$nmf_matrix <- maf.tb.tnm$nmf_matrix[,-as.numeric(which(colSums(maf.tb.tnm$nmf_matrix)==0))]
+
+maf.tb.sign = estimateSignatures(mat = maf.tb.tnm, nTry = 6)
+pdf("maf_tb_nmf_cophenetic.pdf")
+plotCophenetic(maf.tb.sign)
+dev.off()
+maf.tb.sign.sig = extractSignatures(mat = maf.tb.tnm, n = 4)
+maf.tb.og30.cosm = compareSignatures(nmfRes = maf.tb.sign.sig, sig_db = "SBS")
+pdf("maf_tb_nmf_signature.pdf",width =10)
+plotSignatures(nmfRes = maf.tb.sign.sig, title_size = 1.2, sig_db = "SBS")
+dev.off()
+maf.tb.sign.contr <- round(maf.tb.sign.sig$contributions,2)
+cli.tb <-maf.tb.filter@clinical.data
+cli.tb$case <- paste0(cli.tb$ID,cli.tb$Type)
+colnames(maf.tb.sign.contr)<-cli.tb$case[match(colnames(maf.tb.sign.contr),cli.tb$Tumor_Sample_Barcode)]
+pheatmap::pheatmap(mat = maf.tb.og30.cosm$cosine_similarities, cluster_rows = FALSE, main = "cosine similarity against validated signatures")
+maf.tb.sign.contr.mat <- maf.tb.sign.contr[,c(6,3,4,9,5,7,2,8,1)]
+maf.tb.sign.contr.annotation <- cli.tb%>%as.data.frame()
+
+rownames(maf.tb.sign.contr.annotation)<-maf.tb.sign.contr.annotation$case
+maf.tb.sign.contr.annotation<-maf.tb.sign.contr.annotation[match(colnames(maf.tb.sign.contr.mat),maf.tb.sign.contr.annotation$case),]
+maf.tb.sign.contr.annotation<-maf.tb.sign.contr.annotation[,c(2,4,5,9,7)]
+maf.tb.sign.contr.annotation$TMB<-c("Germline Mutation",rep("Somatic Mutation",8))
+# maf.tb.sign.contr.annotation$TMB<-as.numeric(maf.tb.sign.contr.annotation$TMB)
+maf.tb.sign.contr.annotation$Best_Evaluation<-factor(maf.tb.sign.contr.annotation$Best_Evaluation,levels = c("CR","PR","SD","PD"))
+maf.tb.sign.contr.annotation$Time<-ifelse(maf.tb.sign.contr.annotation$Time=="tissue_baseline","pre-treatment","pro-treatment")
+cli.tb<-cli.tb[match(rownames(maf.tb.sign.contr.annotation),cli.tb$case),]
+col.label <- cli.tb$ID
+row.label<-c("Signature 1 \n(Similar to SBS10b)","Signature 2 \n(Similar to SBS10b)","Signature 3 \n(Similar to SBS30)","Signature 4 \n(Similar to SBS39)")
+colnames(maf.tb.sign.contr.annotation)[c(3,4)]<-c("Best Overall Response","Mutation Type")
+maf.tb.sign.contr.annotation$OncoKB.Curated <-c("Unknown",rep("Likely Oncogenic",4),rep("Unknown",4))
+maf.tb.sign.contr.annotation$Functional.Mutation <-c("VUS",rep("Functional Mutation/ Hypermutation",4),rep("VUS",4))
+
+maf.tb.sign.contr.annotation<-maf.tb.sign.contr.annotation[,c(3,5,2,6,7,4)]
+maf.tb.sign.contr.annotation[4,5]<-"VUS"
+pdf("maf_tb_signature_contribution.pdf",width = 25)
+pheatmap::pheatmap(mat = maf.tb.sign.contr.mat, 
+                   annotation_col = maf.tb.sign.contr.annotation,
+                   cluster_cols = F,cluster_rows = F,
+                   c(colorRampPalette(colors = c("#ffffe5","#cb181d"))(100)),
+                   show_colnames = T,
+                   treeheight_col=0,
+                   labels_col = col.label,
+                   labels_row = row.label,
+                   display_numbers = T,
+                   border_color=NA,cellwidth =70,
+                   fontsize_number = 14,
+                   cellheight =70,number_color="Black",
+                   gaps_col = c(4))
+
+
+dev.off()
+
+write.csv(maf.tb.sign.contr.mat,file = "Tissue_gene_mutation_signature_contribution.csv")
