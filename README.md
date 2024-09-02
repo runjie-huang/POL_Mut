@@ -1,8 +1,8 @@
 # POL_Mut
 
 There is the analysis R code for this paper. Analysis Data is not provided.
->"A Phase II Clinical Trial of Toripalimab in Advanced Solid Tumors with POLE/POLD1 Mutation" 
->Ying Jin, Run-Jie Huang, Zong-Jiong Mai, Zhi-Qiang Wang, Yan-Xia Shi, Yu-Hong Li, Jian Xiao, Xing Zhang, Qi Zhao, Ming Liu, Rui-Hua Xu, Feng Wang
+>"A phase II clinical trial of toripalimab in advanced solidtumors with polymerase epsilon/polymerase delta (POLE/POLD1) mutation" 
+>Ying Jin, Run-Jie Huang, Wen-Long Guan, Zhi-Qiang Wang, Zong-Jiong Mai, Yu-Hong Li, Jian Xiao, Xing Zhang,Qi Zhao, Shi-Fu Chen, Ming Liu, Yan-Xia Shi, Feng Wang and Rui-Hua Xu
 
-* MutationSignature.R for Figure 4
-* DynamicsctDNAChangeAnalysis.R for Figure 5
+* MutationSignature.R for Supplement Figure 1
+* DynamicsctDNAChangeAnalysis.R for Supplement Figure 5
